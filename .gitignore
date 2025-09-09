@@ -1,0 +1,58 @@
+# Environment files
+.env
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+logs/*/
+!logs/.gitkeep
+*.log
+airflow*.log
+
+# Downloads / temporary files
+downloads/
+
+
+# Plugins / dynamically generated operators
+plugins/
+
+# Tests 
+tests/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# IDE/editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Optional: large data files
+*.tif
+*.tiff
+*.parquet
+*.sqlite3
+*.db
