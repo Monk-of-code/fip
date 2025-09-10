@@ -51,6 +51,26 @@ class LifecycleLog(Base):
     can_cleanup = Column(Boolean, default=False)
     cleanup_reason = Column(Text)
 
+class ResamplingLog(Base):
+   #Tracks raster resampling and compression before upload
+    __tablename__ = 'resampling_log'
+    
+    id = Column(Integer, primary_key=True)
+    execution_id = Column(String(36), nullable=False)  # UUID for this execution
+    filename = Column(String(255), nullable=False)     # input file
+    output_filename = Column(String(255), nullable=False)  # processed file
+    input_resolution = Column(Float, nullable=False)   # original pixel size (m)
+    target_resolution = Column(Float, nullable=False)  # resampled resolution (m)
+    resampling_method = Column(String(20), default='bilinear')  # nearest, bilinear, bicubic
+    compression = Column(String(20), default='lzw')    # compression type
+    status = Column(String(20), default='pending')     # pending, success, failed
+    start_time = Column(DateTime, default=datetime.utcnow)
+    end_time = Column(DateTime)
+    processing_time_sec = Column(Float)
+    error_message = Column(Text)
+    processed_file_size_bytes = Column(Integer)
+    triggered_by = Column(String(20), default='pipeline')  # pipeline, manual   
+
 class UploadedImage(Base):
     """Tracks images uploaded to GeoNode"""
     __tablename__ = 'uploaded_images'

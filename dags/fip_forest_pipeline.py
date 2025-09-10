@@ -19,6 +19,7 @@ sys.path.append('/opt/airflow/fip')
 
 from database import get_db_session, create_tables, test_connection
 from utils import GLADDownloader, LifecycleManager
+from resampling import RasterResampler
 from upload import GeoNodeUploader
 
 # Default arguments
@@ -134,39 +135,64 @@ def download_glad_image(**context):
     finally:
         if 'db_session' in locals():
             db_session.close()
-            
-def upload_to_geonode(**context):
-    """Upload image to GeoNode with SLD styling (streamed)."""
+
+def resample_raster_task(**context):
+    """Resample raster with compression and log lifecycle"""
     logger = logging.getLogger(__name__)
     
-    db_session = None
     try:
         execution_id = context['task_instance'].xcom_pull(key='execution_id')
         download_result = context['task_instance'].xcom_pull(key='download_result')
+        
+        if not download_result or download_result.get('status') not in ('success','skipped'):
+            raise Exception("No valid raster to resample from download_result XCom")
+        
+        input_raster = download_result['file_path']  # match your downloader's return format
+        db_session = get_db_session()
+        
+        # Initialize resampler
+        resampler = RasterResampler(db_session, output_dir="/opt/airflow/fip/resampled")
+        
+        # Perform resampling
+        result = resampler.resample_raster(
+            input_path=input_raster,
+            execution_id=execution_id,
+            resampling_method="bilinear"                 # e.g. 30m target resolution
+        )
+        
+        if result['status'] == 'success':
+            logger.info(f"Successfully resampled: {result['output_file']}")
+            context['task_instance'].xcom_push(key='resample_result', value=result)
+            return result
+        else:
+            raise Exception(f"Resample failed: {result.get('error', 'Unknown error')}")
+            
+    except Exception as e:
+        logger.error(f"Resample task failed: {e}")
+        raise
+    finally:
+        if 'db_session' in locals():
+            db_session.close()
 
-        if download_result['status'] not in ['success', 'skipped']:
-            raise Exception(f"Cannot upload: download status is {download_result['status']}")
-
+def upload_to_geonode(**context):
+    """Upload image to GeoNode with SLD styling"""
+    logger = logging.getLogger(__name__)
+    
+    try:
+        execution_id = context['task_instance'].xcom_pull(key='execution_id')
+        resample_result = context['task_instance'].xcom_pull(key='resample_result')
         db_session = get_db_session()
         
         # Initialize uploader
         uploader = GeoNodeUploader(db_session)
         
-        # Path to the downloaded raster
-        raster_file = Path(download_result['file_path'])
+        # Upload with styling
+        file_path = Path(resample_result['output_file'])
+        upload_result = uploader.upload_with_styling(file_path, execution_id)
         
-        # Upload raster with SLD styling (streamed)
-        upload_result = uploader.upload_raster_with_sld(
-            raster_file=raster_file,
-            sld_file_name='TREECOVER.sld',  # SLD in styles_dir
-            title=f"GLAD Forest Cover - {raster_file.stem}",
-            abstract="Forest cover data from GLAD (Global Land Analysis & Discovery)",
-            execution_id=execution_id
-        )
-
         if upload_result['status'] == 'success':
             logger.info(f"Successfully uploaded to GeoNode: {upload_result['resource_id']}")
-
+            
             # Mark upload success for cleanup
             lifecycle_manager = LifecycleManager(db_session)
             geonode_urls = {
@@ -185,17 +211,14 @@ def upload_to_geonode(**context):
         else:
             # Mark upload failure
             lifecycle_manager = LifecycleManager(db_session)
-            lifecycle_manager.mark_upload_failure(
-                execution_id, 
-                upload_result.get('error', 'Unknown error')
-            )
+            lifecycle_manager.mark_upload_failure(execution_id, upload_result.get('error', 'Unknown error'))
             raise Exception(f"Upload failed: {upload_result.get('error', 'Unknown error')}")
-
+            
     except Exception as e:
         logger.error(f"Upload task failed: {e}")
         raise
     finally:
-        if db_session:
+        if 'db_session' in locals():
             db_session.close()
 
 def cleanup_files(**context):
@@ -272,6 +295,14 @@ download_glad_image_task = PythonOperator(
     dag=dag,
 )
 
+
+resample_raster = PythonOperator(
+    task_id="resample_raster",
+    python_callable=resample_raster_task,
+    provide_context=True,
+    dag=dag,
+)
+
 upload_to_geonode_task = PythonOperator(
     task_id='upload_to_geonode',
     python_callable=upload_to_geonode,
@@ -291,4 +322,4 @@ finalize_execution_task = PythonOperator(
 )
 
 # Task dependencies
-check_services_task >> initialize_execution_task >> download_glad_image_task >> upload_to_geonode_task >> cleanup_files_task >> finalize_execution_task
+check_services_task >> initialize_execution_task >> download_glad_image_task >> resample_raster >>upload_to_geonode_task >> cleanup_files_task >> finalize_execution_task

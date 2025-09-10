@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session
-from database.models import LifecycleLog, UploadedImage
+from database.models import LifecycleLog, UploadedImage, ResamplingLog
 import logging
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,34 @@ class LifecycleManager:
             self.db_session.rollback()
             raise
     
+    # --------------------------
+    # Resampling Log Management
+    # --------------------------
+    def create_resampling_log(self, execution_id: str, filename: str,
+                              output_filename: str, input_res: float,
+                              target_res: float, method: str = "bilinear",
+                              compression: str = "lzw") -> ResamplingLog:
+        """Create a new resampling log entry (pending state)"""
+        resampling_log = ResamplingLog(
+            execution_id=execution_id,
+            filename=filename,
+            output_filename=output_filename,
+            input_resolution=input_res,
+            target_resolution=target_res,
+            resampling_method=method,
+            compression=compression,
+            status="pending",
+            start_time=datetime.utcnow()
+        )
+        self.db_session.add(resampling_log)
+        self.db_session.commit()
+        logger.info(f"Created resampling log for {execution_id} - {filename}")
+        return resampling_log
+
+
+
+
+
     def mark_upload_success(self, execution_id: str, geonode_resource_id: int, 
                           geonode_urls: dict) -> None:
         """Mark upload as successful and allow cleanup"""

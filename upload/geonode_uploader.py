@@ -1,93 +1,132 @@
 """
-GeoNode Uploader with SLD Styling
-Uploads raster images to GeoNode together with SLD styles
+GeoNode Uploader with Lifecycle Integration
+Uploads raster + SLD to GeoNode, tracks upload in lifecycle + uploaded_images
 """
 
-import os
+import logging
 import requests
 from pathlib import Path
-from datetime import datetime
 from sqlalchemy.orm import Session
-from database.models import MetadataLog
-import logging
+from database.models import UploadedImage
+from utils.lifecycle_manager import LifecycleManager
 
 logger = logging.getLogger(__name__)
 
+
 class GeoNodeUploader:
-    """Uploads raster images together with SLD styling to GeoNode."""
+    """Handles GeoNode raster uploads with SLD and lifecycle logging"""
 
-    def __init__(self, db_session: Session):
+    def __init__(self, db_session: Session,
+                 geonode_url: str,
+                 username: str,
+                 password: str):
         self.db_session = db_session
-        self.geonode_url = os.getenv(
-            'GEONODE_URL', "http://fip.kenyaforestservice.org/api/v2/uploads/upload"
-        )
-        self.username = os.getenv('LOGIN_NAME', 'admin')
-        self.password = os.getenv('LOGIN_PASSWORD', 'admin')
-        self.styles_dir = Path(os.getenv('STYLES_DIR', '/opt/airflow/fip/styles'))
-        self.styles_dir.mkdir(parents=True, exist_ok=True)  # Ensure it exists
+        self.geonode_url = geonode_url.rstrip("/")
+        self.auth = (username, password)
+        self.lifecycle = LifecycleManager(db_session)
 
-    
-    def upload_raster_with_sld(
-        self, raster_file: Path, sld_file_name: str, title: str, abstract: str, execution_id: str
-    ):
-        """Upload raster + SLD to GeoNode and log metadata (streamed)."""
+    def upload_raster(self, execution_id: str, raster_path: str, sld_path: str,
+                      title: str, abstract: str, srid: str = "EPSG:4326") -> dict:
+        """
+        Upload raster with SLD to GeoNode and update lifecycle logs.
+        """
+        raster_path = Path(raster_path)
+        sld_path = Path(sld_path)
+
         try:
-            if not raster_file.exists():
-                raise FileNotFoundError(f"Raster file not found: {raster_file}")
+            if not raster_path.exists():
+                raise FileNotFoundError(f"Raster not found: {raster_path}")
+            if not sld_path.exists():
+                raise FileNotFoundError(f"SLD not found: {sld_path}")
 
-            sld_file_path = self.styles_dir / sld_file_name
-            if not sld_file_path.exists():
-                raise FileNotFoundError(f"SLD file not found: {sld_file_path}")
-
-            # Metadata form
-            data = {
-                'title': title,
-                'abstract': abstract,
-                'srid': 'EPSG:4326'
+            files = {
+                "base_file": open(raster_path, "rb"),
+                "sld_file": open(sld_path, "rb"),
             }
 
-            logger.info(f"Uploading raster {raster_file.name} with SLD {sld_file_name}...")
+            data = {
+                "title": title,
+                "abstract": abstract,
+                "srid": srid,
+            }
 
-            # Stream upload using 'with' to auto-close files
-            with open(raster_file, 'rb') as raster, open(sld_file_path, 'rb') as sld:
-                files = {'base_file': raster, 'sld_file': sld}
-                response = requests.post(
-                    self.geonode_url,
-                    auth=(self.username, self.password),
-                    files=files,
-                    data=data,
-                    timeout=(600, 7200)
-                )
-                response.raise_for_status()
-                result = response.json()
+            url = f"{self.geonode_url}/api/v2/uploads/upload"
+            logger.info(f"Uploading {raster_path.name} to GeoNode: {url}")
 
-            # Log metadata
-            metadata_log = MetadataLog(
-                uploaded_image_id=result.get('id'),
-                style_name=sld_file_name,
-                sld_file_path=str(sld_file_path),
-                geonode_style_url=result.get('style_url', ''),
-                applied_time=datetime.utcnow(),
-                status='applied',
-                execution_id=execution_id
+            response = requests.post(url, auth=self.auth, files=files, data=data)
+
+            # Handle response
+            if response.status_code != 200:
+                self.lifecycle.mark_upload_failure(execution_id, response.text)
+                return {
+                    "status": "failed",
+                    "error": response.text,
+                    "http_code": response.status_code
+                }
+
+            result = response.json()
+            upload_id = result.get("id")
+            detail_url = result.get("detail_url", "")
+            thumb_url = result.get("thumbnail_url", "")
+            resource_url = result.get("resource_url", "")
+
+            # Mark lifecycle success
+            self.lifecycle.mark_upload_success(
+                execution_id,
+                geonode_resource_id=upload_id,
+                geonode_urls={
+                    "resource_url": resource_url,
+                    "thumbnail_url": thumb_url,
+                    "detail_url": detail_url
+                }
             )
-            self.db_session.add(metadata_log)
-            self.db_session.commit()
-
-            logger.info(f"Upload successful: {raster_file.name}, resource ID: {result.get('id')}")
 
             return {
-                'status': 'success',
-                'resource_id': result.get('id'),
-                'resource_url': result.get('resource_url', ''),
-                'thumbnail_url': result.get('thumbnail_url', ''),
-                'detail_url': result.get('detail_url', ''),
-                'response_code': response.status_code
+                "status": "success",
+                "upload_id": upload_id,
+                "urls": {
+                    "resource_url": resource_url,
+                    "thumbnail_url": thumb_url,
+                    "detail_url": detail_url
+                }
             }
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"GeoNode upload failed: {e}")
-            return {'status': 'failed', 'error': str(e), 'response_code': getattr(e.response, 'status_code', None)}
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            return {'status': 'failed', 'error': str(e)}
+            logger.error(f"Upload failed for {raster_path}: {e}")
+            self.lifecycle.mark_upload_failure(execution_id, str(e))
+            return {
+                "status": "failed",
+                "error": str(e),
+                "file": str(raster_path)
+            }
+
+    def get_upload_status(self, upload_id: int) -> dict:
+        """
+        Query GeoNode for upload status.
+        """
+        try:
+            url = f"{self.geonode_url}/api/v2/uploads/{upload_id}/"
+            logger.info(f"Checking status for upload ID {upload_id}")
+
+            response = requests.get(url, auth=self.auth)
+
+            if response.status_code != 200:
+                return {
+                    "status": "failed",
+                    "error": response.text,
+                    "http_code": response.status_code
+                }
+
+            return {
+                "status": "success",
+                "upload_id": upload_id,
+                "upload_status": response.json()
+            }
+
+        except Exception as e:
+            logger.error(f"Status check failed for upload {upload_id}: {e}")
+            return {
+                "status": "failed",
+                "error": str(e),
+                "upload_id": upload_id
+            }
