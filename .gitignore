@@ -56,3 +56,4 @@ Desktop.ini
 *.parquet
 *.sqlite3
 *.db
+*.xml
