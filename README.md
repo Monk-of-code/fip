@@ -1,6 +1,6 @@
-# FIP Forest Cover Pipeline - Single Image
+# FIP Forest Cover Pipeline 
 
-A containerized Airflow pipeline that downloads ONE GLAD forest cover image and uploads it to GeoNode with SLD styling.
+A containerized Airflow pipeline that downloads one GLAD forest cover image and uploads it to GeoNode with SLD styling.
 
 ##  **Project Overview**
 
@@ -30,20 +30,13 @@ fip/
 │   ├── __init__.py
 │   ├── glad_downloader.py
 │   └── lifecycle_manager.py
-├── tests/             # Test suite
-│   ├── __init__.py
-│   ├── test_database.py
-│   ├── test_glad_downloader.py
-│   ├── test_geonode_uploader.py
-│   ├── test_lifecycle_manager.py
-│   └── run_all_tests.py
 ├── styles/            # SLD styling files
-│   └── TREECOVER.sld
+│   └── treecover.sld
 ├── docker-compose.yml # Docker services
 ├── dockerfile         # Airflow container
 ├── requirements.txt   # Python dependencies
 ├── .env              # Environment variables
-└── sample.env        # Sample environment
+└── sample.env        # Sample environment variables
 ```
 
 ## 🚀 **Quick Start**
@@ -60,7 +53,10 @@ nano .env
 ### **2. Start Services**
 ```bash
 # Start all services
-docker-compose up -d
+docker-compose up -d --build
+
+#wait  for status to get healthy (powershell or linux terminal)
+sleep 30
 
 # Check service status
 docker-compose ps
@@ -68,12 +64,12 @@ docker-compose ps
 
 ### **3. Initialize Database**
 ```bash
-# Create database tables
+# Create database tables (optional initialise phase of pipeline creates the tables)
 docker-compose exec airflow-webserver python -c "from database import create_tables; create_tables()"
 ```
 
 ### **4. Access Airflow UI**
-- URL: http://localhost:8085
+- URL: http://localhost:8990
 - Username: `airflow`
 - Password: `airflow`
 
@@ -96,19 +92,21 @@ LOGIN_PASSWORD=your_password
 # Database Configuration
 DATABASE_URL=postgresql://airflow:airflow@postgres:5432/airflow
 
-# MinIO Configuration
-MINIO_ENDPOINT=minio:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_BUCKET=fip-forest-data
+#AIRFLOW CONFIGURATION
+AIRFLOW__WEBSERVER__RBAC=True
+AIRFLOW__WEBSERVER__AUTHENTICATE=True
+AIRFLOW__WEBSERVER__AUTH_BACKENDS=airflow.api.auth.backend.basic_auth
+AIRFLOW_WEBSERVER_SECRET_KEY='input any password'
+AIRFLOW__CORE__FERNET_KEY='generate fernet key use python"
+AIRFLOW__LOGGING__REMOTE_LOGGING=False #set to false to avoid referencing other files beside specified files
 
-# Processing Configuration
-PROCESSING_APPROACH=individual
-MAX_MEMORY_GB=2
+#OWNERSHIP
+AIRFLOW_UID=50000
+AIRFLOW_GID=1000
 ```
 
 ## 📊 **Database Schema**
-
+-Tables
 ### **ImageDeduplication**
 - Tracks downloaded images to prevent re-downloads
 - Fields: filename, extent, original_url, file_hash, status
@@ -124,6 +122,10 @@ MAX_MEMORY_GB=2
 ### **MetadataLog**
 - Tracks SLD styling applications
 - Fields: uploaded_image_id, style_name, sld_file_path, applied_time, status
+
+### ***Resample_log** 
+- Tracks resampled images
+- Fields: status,input_file,resampling_method,scale_factor,filesize
 
 ## 🧪 **Testing**
 
@@ -153,13 +155,14 @@ docker-compose exec airflow-webserver python tests/test_lifecycle_manager.py
 1. **Check Services** - Verify all components are ready
 2. **Initialize Execution** - Create database tables and generate execution ID
 3. **Download GLAD Image** - Download treecover2010_00N_030E.tif with deduplication
-4. **Upload to GeoNode** - Upload with metadata and apply SLD styling
-5. **Cleanup Files** - Delete files only after successful upload
-6. **Finalize Execution** - Log summary and completion status
+4. **Resample raster**   -Resample and compresses  raster file
+5. **Upload to GeoNode** - Upload with metadata and apply SLD styling
+6. **Cleanup Files** - Delete files only after successful upload
+7. **Finalize Execution** - Log summary and completion status
 
 ## 🎨 **SLD Styling**
 
-The pipeline automatically applies styling from `styles/TREECOVER.sld`:
+The pipeline automatically applies styling from `styles/treecover.sld`:
 - **Color Map**: Green gradient for forest cover values (0-100)
 - **Transparency**: Semi-transparent overlay
 - **Classification**: Continuous color ramp
@@ -184,6 +187,9 @@ SELECT * FROM lifecycle_log;
 
 -- Check styling applications
 SELECT * FROM metadata_log;
+
+--Check resampling logs
+SELECT * FROM resample_logs
 ```
 
 ## 🔍 **Troubleshooting**
@@ -270,15 +276,3 @@ cleanup_result = manager.cleanup_successful_uploads()
 3. Make your changes
 4. Add tests
 5. Submit a pull request
-
-## 📄 **License**
-
-This project is licensed under the MIT License.
-
-## 🆘 **Support**
-
-For support and questions:
-- Check the troubleshooting section
-- Review the test suite
-- Check Airflow logs
-- Verify environment configuration

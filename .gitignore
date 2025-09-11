@@ -57,3 +57,4 @@ Desktop.ini
 *.sqlite3
 *.db
 *.xml
+test.py
