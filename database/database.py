@@ -31,6 +31,12 @@ def create_tables():
     try:
         database_url = get_database_url()
         engine = create_engine(database_url)
+
+        #enable pgcrypto for gen_random_uuid
+        with engine.begin() as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+            
+        #create tables
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables created successfully")
         return True

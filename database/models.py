@@ -3,11 +3,16 @@ Database Models for FIP Project
 Tracks image downloads, uploads, and lifecycle management
 """
 
+
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, Float, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
-import uuid
+
+
+from sqlalchemy.sql.operators import as_
 
 Base = declarative_base()
 
@@ -75,9 +80,9 @@ class UploadedImage(Base):
     """Tracks images uploaded to GeoNode"""
     __tablename__ = 'uploaded_images'
     
-    id = Column(Integer, primary_key=True)
+    id = Column(Integer,primary_key=True)
     filename = Column(String(255), nullable=False)
-    geonode_resource_id = Column(Integer, nullable=False)
+    geonode_resource_id = Column(UUID(as_uuid=True),nullable=False)
     geonode_resource_url = Column(Text, nullable=False)
     geonode_thumbnail_url = Column(Text)
     geonode_detail_url = Column(Text)
@@ -94,7 +99,7 @@ class MetadataLog(Base):
     __tablename__ = 'metadata_log'
     
     id = Column(Integer, primary_key=True)
-    uploaded_image_id = Column(Integer, ForeignKey('uploaded_images.id'))
+    uploaded_image_id = Column(Integer, ForeignKey('uploaded_images.id'),nullable=False)
     style_name = Column(String(100), nullable=False)
     sld_file_path = Column(Text, nullable=False)
     geonode_style_url = Column(Text)

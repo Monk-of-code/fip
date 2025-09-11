@@ -15,6 +15,8 @@ import logging
 # Import our custom modules
 import sys
 import os
+
+from upload.geonode_uploader import GeoNodeUploader
 sys.path.append('/opt/airflow/fip')
 
 from database import get_db_session, create_tables, test_connection
@@ -74,7 +76,7 @@ def check_services(**context):
         if not styles_dir.exists():
             raise Exception(f"Styles directory not found: {styles_dir}")
         
-        sld_file = styles_dir / 'TREECOVER.sld'
+        sld_file = styles_dir / 'treecover.sld'
         if not sld_file.exists():
             raise Exception(f"SLD file not found: {sld_file}")
         
@@ -174,52 +176,49 @@ def resample_raster_task(**context):
         if 'db_session' in locals():
             db_session.close()
 
-def upload_to_geonode(**context):
-    """Upload image to GeoNode with SLD styling"""
+def upload_to_geonode_task(**context):
+    """Upload raster to GeoNode using the simplified GeoNodeUploader."""
     logger = logging.getLogger(__name__)
     
     try:
+        # Pull execution ID and raster path from previous tasks
         execution_id = context['task_instance'].xcom_pull(key='execution_id')
         resample_result = context['task_instance'].xcom_pull(key='resample_result')
+        raster_path = Path(resample_result['output_file'])
+
+        # Get DB session
         db_session = get_db_session()
-        
+
         # Initialize uploader
-        uploader = GeoNodeUploader(db_session)
-        
-        # Upload with styling
-        file_path = Path(resample_result['output_file'])
-        upload_result = uploader.upload_with_styling(file_path, execution_id)
-        
-        if upload_result['status'] == 'success':
-            logger.info(f"Successfully uploaded to GeoNode: {upload_result['resource_id']}")
-            
-            # Mark upload success for cleanup
-            lifecycle_manager = LifecycleManager(db_session)
-            geonode_urls = {
-                'resource_url': upload_result.get('resource_url', ''),
-                'thumbnail_url': upload_result.get('thumbnail_url', ''),
-                'detail_url': upload_result.get('detail_url', '')
-            }
-            lifecycle_manager.mark_upload_success(
-                execution_id, 
-                upload_result['resource_id'], 
-                geonode_urls
+        uploader = GeoNodeUploader(
+            db_session = db_session,
+            geonode_url=os.getenv('GEONODE_URL'),
+            username=os.getenv('LOGIN_NAME'),
+            password=os.getenv('LOGIN_PASSWORD'),
+            default_sld='/opt/airflow/fip/styles/treecover.sld'
             )
-            
-            context['task_instance'].xcom_push(key='upload_result', value=upload_result)
-            return upload_result
+
+        # Upload
+        result = uploader.upload_raster(execution_id, raster_path)
+
+        # Push result to XCom
+        context['task_instance'].xcom_push(key='upload_result', value=result)
+
+        if result['status'] == 'success':
+            logger.info(f"Upload completed: {result['response'].get('id')}")
         else:
-            # Mark upload failure
-            lifecycle_manager = LifecycleManager(db_session)
-            lifecycle_manager.mark_upload_failure(execution_id, upload_result.get('error', 'Unknown error'))
-            raise Exception(f"Upload failed: {upload_result.get('error', 'Unknown error')}")
-            
+            raise Exception(f"Upload failed: {result.get('error')}")
+
+        return result
+
     except Exception as e:
         logger.error(f"Upload task failed: {e}")
         raise
+
     finally:
         if 'db_session' in locals():
             db_session.close()
+
 
 def cleanup_files(**context):
     """Clean up files that were successfully uploaded"""
@@ -305,7 +304,8 @@ resample_raster = PythonOperator(
 
 upload_to_geonode_task = PythonOperator(
     task_id='upload_to_geonode',
-    python_callable=upload_to_geonode,
+    python_callable=upload_to_geonode_task,
+    provide_context=True,
     dag=dag,
 )
 
