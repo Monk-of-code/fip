@@ -104,6 +104,17 @@ AIRFLOW__LOGGING__REMOTE_LOGGING=False #set to false to avoid referencing other 
 AIRFLOW_UID=50000
 AIRFLOW_GID=1000
 ```
+## **Generating a fernet key**
+```bash
+# Access the container bash using 
+docker compose exec -it airflow-webserver sh
+
+#generate fernet key using
+
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+#copy output to the .env file
+```
 
 ## 📊 **Database Schema**
 -Tables
